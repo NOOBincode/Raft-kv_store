@@ -25,9 +25,8 @@ type IlogManager interface {
 	ProcessCmd(cmd StateMachineCmd, term int) int
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
 	CommitAndApply(targtIndex int) (newCommitIndex bool, newSnapshotIndex bool)
-	InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int)
-
-	//proxy to state machine Get 获取在状态机中定义的Get
+	InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error
+	// IValueGetter proxy to state machine Get 获取在状态机中定义的Get
 	IValueGetter
 }
 
@@ -46,6 +45,25 @@ type logManager struct {
 	logs          []LogEntry
 
 	IStateMachine
+}
+
+func newLogMgr(nodeID int, sm IStateMachine) IlogManager {
+	if sm == nil {
+		util.Panicf("状态机不能是空的")
+	}
+
+	lm := &logManager{
+		nodeID:        nodeID,
+		lastIndex:     -1,
+		lastTerm:      -1,
+		commitIndex:   -1,
+		snapshotIndex: -1,
+		snapshotTerm:  -1,
+		lastApplied:   -1,
+		logs:          make([]LogEntry, 0, logsCapacity),
+		IStateMachine: sm,
+	}
+	return lm
 }
 
 func (lm *logManager) LastIndex() int { return lm.lastIndex }
@@ -189,12 +207,61 @@ func (lm *logManager) TakeSnapshot() error {
 	term := lm.getLogEntryTerm(index)
 
 	//序列化并且生成快照
-	file, w, err := createSnapshot()
+	file, w, err := createSnapshot(lm.nodeID, term, index, "local")
+
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+
+	//尝试删除旧快照文件
+	deleteSnapshot(lm.SnapshotFile())
+
+	//从状态机中序列化,截断日志并且更新信息
+	if err = lm.Serialize(w); err != nil {
+		util.WriteError("Failed to serialize snapshot: %s", err)
+		return err
+	}
+
+	remaining, _, _ := lm.GetLogEntries(index+1, lm.lastIndex+1)
+	lm.logs = lm.logs[0:len(remaining)]
+	copy(lm.logs, remaining)
+
+	lm.snapshotIndex = index
+	lm.snapshotTerm = term
+	lm.snapshotFile = file
+
+	return nil
 }
 
-func (lm *logManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) {
-	//TODO implement me
-	panic("implement me")
+// InstallSnapshot 安装一个快照
+// 为了便捷,在下载快照之后丢弃所有本地日志
+func (lm *logManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
+	//读取快照并且反序列化
+	r, err := openSnapshot(snapshotFile)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	deleteSnapshot(lm.snapshotFile)
+
+	//将反序列化的结果进入状态机中,更新信息
+	if err = lm.Deserialize(r); err != nil {
+		util.WriteError("Failed to deserialize snapshot: %s", err)
+		return err
+	}
+
+	lm.snapshotIndex = snapshotIndex
+	lm.snapshotTerm = snapshotTerm
+	lm.snapshotFile = snapshotFile
+	lm.lastApplied = snapshotIndex
+	lm.commitIndex = snapshotIndex
+	lm.lastIndex = snapshotIndex
+	lm.lastTerm = snapshotTerm
+	lm.logs = lm.logs[0:0]
+
+	return nil
 }
 func (lm *logManager) shiftToActualIndex(logIndex int) int {
 	return logIndex - (lm.snapshotIndex + 1)
@@ -266,25 +333,5 @@ func (lm *logManager) findFirstConflictIndex(prevLogIndex int, entries []LogEntr
 			break
 		}
 	}
-
 	return index
-}
-func newLogMgr(nodeID int, sm IStateMachine) IlogManager {
-	if sm == nil {
-		util.Panicf("状态机不能是空的")
-	}
-
-	lm := &logManager{
-		nodeID:        nodeID,
-		lastIndex:     -1,
-		lastTerm:      -1,
-		commitIndex:   -1,
-		snapshotIndex: -1,
-		snapshotTerm:  -1,
-		lastApplied:   -1,
-		logs:          make([]LogEntry, 0, logsCapacity),
-		IStateMachine: sm,
-	}
-	return lm
-
 }

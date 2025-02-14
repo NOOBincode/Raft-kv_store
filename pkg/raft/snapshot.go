@@ -24,9 +24,54 @@ type SnapshotStreamReader struct {
 	readPtr int
 }
 
+type SnapshotStreamWriter struct {
+	header *SnapshotRequestHeader
+	send   sendFunc
+}
+
+// 创建一个新的SnapshotStreamReader
+func newSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStreamReader, error) {
+	//为了获取快照任期和快照索引所做的第一次读
+	header, data, err := recv()
+	if err != nil {
+		return nil, err
+	}
+	if err == io.EOF {
+		return nil, errorInvalidSnapshotInfo
+	}
+	if !partcb(header) {
+		return nil, errorSnapshotFromStaleLeader
+	}
+
+	return &SnapshotStreamReader{header: header, recv: recv, partcb: partcb, buf: data}, nil
+}
+
+func (writer *SnapshotStreamWriter) Write(data []byte) (n int, err error) {
+	n = len(data)
+	err = writer.send(writer.header, data)
+	return n, err
+}
 func (reader *SnapshotStreamReader) Read(p []byte) (n int, err error) {
-	//TODO implement me
-	panic("implement me")
+	if reader.readPtr == len(reader.buf) {
+		//缓冲层没数据了,去其他地方读
+		header, data, err := reader.recv()
+		if err != nil {
+			return 0, err
+		}
+		if *header != *reader.header {
+			return 0, errorDifferentHeader
+		}
+		if !reader.partcb(header) {
+			return 0, errorSnapshotFromStaleLeader
+		}
+
+		reader.buf = data
+		reader.readPtr = 0
+	}
+	n = copy(p, reader.buf[reader.readPtr:])
+	reader.readPtr += n
+
+	return n, nil
 }
 
 type recvFunc func() (*SnapshotRequestHeader, []byte, error)
@@ -87,5 +132,23 @@ func ReceiveSnapshot(nodeID int, reader *SnapshotStreamReader) (req *SnapshotReq
 	}
 	req.File = file
 	return
+}
 
+func SendSnapshot(file string, writer *SnapshotStreamWriter) error {
+	reader, err := openSnapshot(file)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	_, err = io.Copy(writer, reader)
+	return err
+}
+
+// NewSnapshotStreamWriter creates a new gRPCSnapshotStreamWriter
+func NewSnapshotStreamWriter(header *SnapshotRequestHeader, send sendFunc) *SnapshotStreamWriter {
+	return &SnapshotStreamWriter{
+		header: header,
+		send:   send,
+	}
 }
