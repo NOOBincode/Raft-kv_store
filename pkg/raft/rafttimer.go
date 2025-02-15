@@ -61,9 +61,19 @@ func (rt *raftTimer) run() {
 		select {
 		case evt := <-rt.evtChan:
 			state, term = evt.state, evt.term
-
+			timeout := getTimeout(state, term)
+			util.WriteVerbose("重置计时器,state:%d,term:%d,timeout:%d", state, term, timeout)
+			util.RestTimer(rt.timer, timeout)
+		case _, ok := <-rt.timer.C:
+			if !ok {
+				stop = true
+				break
+			}
+			util.WriteVerbose("计时事件结束,state:%d,term:%d,timeout:%d\", state, term, timeout")
+			rt.callback(state, term)
 		}
 	}
+	rt.wg.Done()
 }
 
 var firstFollow = true
@@ -74,11 +84,14 @@ func getTimeout(state NodeState, term int) (timeout time.Duration) {
 		return
 	}
 
-	ms := rand.Intn(heartbeatTimeoutMS-heartbeatTimeoutMS) + heartbeatTimeoutMS
+	ms := rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS) + minElectionTimeoutMS
 	timeout = time.Duration(ms) * time.Millisecond
 
 	isFollow := term > 0 && state == NodeStateFollower
 	if firstFollow && isFollow {
+		//节点开始时投票,根据收到的推举信息来确定当前集群的任期,但是leader建立RPC连接需要时间,心跳会延迟,如果太快开始新投票,会导致当前集群增加任期,同时其他节点开始选举
+		//最坏的情况是leader和其他节点都照常工作但是出现选举风暴
+		//缓解方法就是让跟随者下一次选举超时时间适当延长
 		timeout = timeout * 10
 		firstFollow = false
 	}
