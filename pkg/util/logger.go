@@ -1,7 +1,9 @@
 package util
 
 import (
-	"log"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 const (
@@ -17,18 +19,86 @@ const (
 	LevelVerbose = 5
 )
 
-var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
-var Loglevel = LevelInfo
+var (
+	suger       *zap.SugaredLogger
+	atomicLevel zap.AtomicLevel
+)
+
+func InitLogger(logLevel int, isProduction bool, filename string) {
+	atomicLevel = zap.NewAtomicLevelAt(toZapLevel(logLevel))
+
+	//配置一个日志轮转
+	lumberjackLogger := &lumberjack.Logger{
+		Filename:   filename,
+		MaxBackups: 3,
+		MaxAge:     30,
+		MaxSize:    100,
+	}
+	var core zapcore.Core
+	if isProduction {
+		core = zapcore.NewCore(
+			zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+			zapcore.AddSync(lumberjackLogger),
+			atomicLevel,
+		)
+	} else {
+		core = zapcore.NewCore(
+			zapcore.NewJSONEncoder(zap.NewDevelopmentEncoderConfig()),
+			zapcore.AddSync(lumberjackLogger),
+			atomicLevel,
+		)
+	}
+
+	logger := zap.New(core)
+	suger = logger.Sugar()
+}
+
+func toZapLevel(level int) zapcore.Level {
+	switch level {
+	case LevelError:
+		return zap.ErrorLevel
+	case LevelWarning:
+		return zap.WarnLevel
+	case LevelInfo:
+		return zap.InfoLevel
+	case LevelTrace, LevelVerbose:
+		return zap.DebugLevel
+	default:
+		return zap.InfoLevel
+	}
+}
 
 func setLogLevel(level int) {
-	if level < LevelError {
-		level = LevelError
-	}
-	Loglevel = level
+	atomicLevel.SetLevel(toZapLevel(level))
 }
 func WriteLog(level int, format string, v ...interface{}) {
-	if level <= Loglevel {
-		logger.Printf(format, v...)
+	switch level {
+	case LevelError:
+		suger.Errorf(format, v...)
+	case LevelWarning:
+		suger.Warnf(format, v...)
+	case LevelInfo:
+		suger.Infof(format, v...)
+	case LevelTrace, LevelVerbose:
+		suger.Debugf(format, v...)
+	}
+}
+
+func WriteStructured(level int, msg string, fields map[string]interface{}) {
+	zapFields := make([]zap.Field, 0, len(fields))
+	for k, v := range fields {
+		zapFields = append(zapFields, zap.Any(k, v))
+	}
+
+	switch level {
+	case LevelError:
+		suger.Errorw(msg, zapFields)
+	case LevelWarning:
+		suger.Warnw(msg, zapFields)
+	case LevelInfo:
+		suger.Infow(msg, zapFields)
+	case LevelTrace, LevelVerbose:
+		suger.Debugw(msg, zapFields)
 	}
 }
 
@@ -59,15 +129,15 @@ func WriteVerbose(format string, v ...interface{}) {
 
 // Panicf is equivalent to l.Printf() followed by a call to panic().
 func Panicf(format string, v ...interface{}) {
-	logger.Panicf(format, v...)
+	suger.Panicf(format, v...)
 }
 
 // Panicln is equivalent to l.Println() followed by a call to panic().
 func Panicln(v ...interface{}) {
-	logger.Panicln(v...)
+	suger.Panicln(v...)
 }
 
 // Fatalf is equivalent to Printf followed by os.Exit(1)
 func Fatalf(format string, v ...interface{}) {
-	logger.Fatalf(format, v...)
+	suger.Fatalf(format, v...)
 }

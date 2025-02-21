@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+option go_package = "pkg/rkv/pb";
+
+
+package pb;
+
+service KVStoreRaft{
+
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesReply) {}
+  // RequestVote
+  rpc RequestVote (RequestVoteRequest) returns (RequestVoteReply) {}
+  // InstallSnapshot - note we are returning AppendEntriesReply since this is a special kind of AppendEntries
+  rpc InstallSnapshot (stream SnapshotRequest) returns (AppendEntriesReply) {}
+
+  // KVStore write operations, needs to be processed by raft node and tracked by logs
+  rpc Set (SetRequest) returns (SetReply) {}
+  rpc Delete (DeleteRequest) returns (DeleteReply) {}
+
+  // KVStore read operations, no need to be tracked by logs
+  rpc Get (GetRequest) returns (GetReply) {}
+}
+
+
+message KVCmdData {
+  string key = 1;
+  string value = 2;
+}
+
+message KVCmd{
+  int32  cmdType = 1;
+  KVCmdData Data = 2;
+}
+message SnapshotRequest {
+  int64 term = 1;
+  int64 leaderID = 2;
+  int64 snapshotIndex = 3;
+  int64 snapshotTerm = 4;
+  bytes data = 5;
+}
+message LogEntry {
+  int64  index = 1;
+  int64  term = 2;
+  KVCmd cmd = 3;
+}
+
+message AppendEntriesRequest {
+  int64  term = 1;
+  int64 leaderID = 2;
+  int64 prevLogIndex = 3;
+  int64 prevLogTerm = 4;
+  int64 leaderCommit = 5;
+  repeated LogEntry entries = 6;
+}
+
+message AppendEntriesReply {
+  int64 term = 1;
+  int64 nodeID = 2;
+  int64 leaderID = 3;
+  bool success = 4;
+  int64 lastMatch = 5;
+}
+
+message RequestVoteRequest{
+  int64 term = 1;
+  int64 candidateID = 2;
+  int64 lastLogIndex = 3;
+  int64 lastLogTerm = 4;
+}
+
+message RequestVoteReply {
+  int64 term = 1;
+  int64 nodeID = 2;
+  int64 votedTerm = 3;
+  bool voteGranted = 4;
+}
+
+message SetRequest{
+  string key = 1;
+  string value = 2;
+}
+
+message SetReply{
+  int64 nodeID = 1;
+  bool success = 2;
+}
+
+
+message DeleteRequest {
+  string key = 1;
+}
+
+
+message DeleteReply {
+  int64 nodeID = 1;
+  bool success = 2;
+}
+
+
+message GetRequest {
+  string key = 1;
+}
+
+
+message GetReply {
+  int64 nodeID = 1;
+  bool success = 2;
+  string value = 3;
+}

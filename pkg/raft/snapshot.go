@@ -30,7 +30,7 @@ type SnapshotStreamWriter struct {
 }
 
 // 创建一个新的SnapshotStreamReader
-func newSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStreamReader, error) {
+func NewSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStreamReader, error) {
 	//为了获取快照任期和快照索引所做的第一次读
 	header, data, err := recv()
 	if err != nil {

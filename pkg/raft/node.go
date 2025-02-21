@@ -145,14 +145,13 @@ func (n *node) onTimer(state NodeState, term int) {
 		if n.NodeState == NodeStateLeader {
 			fn = n.sendHeartbeat
 		}else{
-			fn = n.
+			fn = n.startElection
 		}
 	}
 	n.mu.RUnlock()
 	if fn != nil {
 		fn()
 	}
-
 }
 
 func (n *node) enterCandidateState() {
@@ -185,7 +184,9 @@ func (n *node) refreshTimer() {
 }
 
 func (n *node) startElection(){
-	runCampaign := n.pre
+	runCampaign := n.prepareCampaign()
+	votes := runCampaign()
+	n.countVotes(votes)
 }
 
 func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
@@ -203,6 +204,53 @@ func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 	currentTerm := n.currentTerm
 
 	return func() <-chan *RequestVoteReply {
-		
+		ctx,cancel := context.WithTimeout(context.Background(),rpcTimeOut)
+		defer cancel()
+
+		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
+		defer close(rvReplies)
+
+		n.peerMgr.waitAll(func(peer *Peer, wg *sync.WaitGroup) {
+			go func(){
+				reply,err := peer.RequestVote(ctx,req)
+				if err != nil {
+					util.WriteInfo("T%d:投票请求来自Node %d,已授权:%v\n",currentTerm,reply.NodeID,reply.VoteGranted)
+					rvReplies <- reply
+				}
+				wg.Done()
+			}()
+		})
+		return rvReplies
 	}
+}
+
+func (n *node) countVotes(replies <-chan *RequestVoteReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	for reply := range replies {
+		if n.tryFollowNewTerm(reply.NodeID,reply.Term,false) {
+			return
+		}
+		if n.NodeState != NodeStateCandidate || reply.VotedTerm != n.currentTerm {
+			util.WriteTrace("T%d: 接受了无同伴的节点或者未授权的投票,来自Node%d,term :%d,voteGranted:%t\n",n.currentTerm,reply.NodeID,reply.VotedTerm,reply.VoteGranted)
+			continue
+		}
+
+		n.votes[reply.NodeID] = true
+	}
+
+	if n.wonElection(){
+		n.enterLeaderState()
+	}
+}
+
+func (n *node) wonElection() bool{
+	total := 0
+	for _, vote := range n.votes {
+		if vote {
+			total++
+		}
+	}
+	return total > n.clusterSize/2
 }
