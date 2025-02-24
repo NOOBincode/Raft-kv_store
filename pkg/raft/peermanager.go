@@ -2,7 +2,7 @@ package raft
 
 import (
 	"errors"
-	"pkg/util"
+	"raft-kv_store/pkg/util"
 	"sync"
 )
 

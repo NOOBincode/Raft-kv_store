@@ -1,6 +1,6 @@
 package raft
 
-import "pkg/util"
+import "raft-kv_store/pkg/util"
 
 const snapshotEntriesCount = 4096
 const logsCapacity = snapshotEntriesCount * 3 / 2
@@ -143,6 +143,7 @@ func (lm *logManager) appendLogs(entries ...LogEntry) {
 	}
 }
 
+// ProcessLogs 检测日志是否合法,是否和原有的日志对齐(首尾连接无中断),如果没有问题则进行压入日志操作
 func (lm *logManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) bool {
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 

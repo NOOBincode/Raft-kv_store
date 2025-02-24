@@ -1,17 +1,17 @@
 package rkv
 
 import (
-	"pkg/raft"
-	"pkg/rkv/pb"
-	"pkg/util"
+	"raft-kv_store/pkg/raft"
+	"raft-kv_store/pkg/rkv/pb"
+	"raft-kv_store/pkg/util"
 )
 
 func toRaftAERequest(req *pb.AppendEntriesRequest) *raft.AppendEntriesRequest {
 	entries := make([]raft.LogEntry, len(req.Entries))
 	for i, v := range req.Entries {
 		cmdData := KVCmdData{
-			Key:   v.Cmd.Data.Key,
-			Value: v.Cmd.Data.Value,
+			Key: v.Cmd.Data.Key,
+			Val: v.Cmd.Data.Value,
 		}
 
 		cmd := raft.StateMachineCmd{
@@ -45,7 +45,7 @@ func fromRaftAERequest(req *raft.AppendEntriesRequest) *pb.AppendEntriesRequest 
 			CmdType: int32(v.Cmd.CmdType),
 			Data: &pb.KVCmdData{
 				Key:   v.Cmd.Data.(KVCmdData).Key,
-				Value: v.Cmd.Data.(KVCmdData).Value,
+				Value: v.Cmd.Data.(KVCmdData).Val,
 			},
 		}
 		entry := &pb.LogEntry{
@@ -181,8 +181,8 @@ func fromRaftGetReply(resp *raft.GetReply) *pb.GetReply {
 
 func toRaftSetRequest(req *pb.SetRequest) *raft.StateMachineCmd {
 	cmdData := KVCmdData{
-		Key:   req.Key,
-		Value: req.Value,
+		Key: req.Key,
+		Val: req.Value,
 	}
 
 	cmd := &raft.StateMachineCmd{
@@ -200,7 +200,7 @@ func fromRaftSetRequest(cmd *raft.StateMachineCmd) *pb.SetRequest {
 
 	return &pb.SetRequest{
 		Key:   cmd.Data.(KVCmdData).Key,
-		Value: cmd.Data.(KVCmdData).Value,
+		Value: cmd.Data.(KVCmdData).Val,
 	}
 }
 

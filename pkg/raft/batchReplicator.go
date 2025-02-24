@@ -2,7 +2,7 @@ package raft
 
 import (
 	"math"
-	"pkg/util"
+	"raft-kv_store/pkg/util"
 	"sync"
 )
 

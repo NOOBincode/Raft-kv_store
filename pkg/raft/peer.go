@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"pkg/util"
+	"raft-kv_store/pkg/util"
 )
 
 const nextIndexFallbackStep = 1

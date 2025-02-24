@@ -1,4 +1,4 @@
-module pkg
+module raft-kv_store
 
 go 1.23
 

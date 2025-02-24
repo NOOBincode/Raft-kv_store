@@ -2,8 +2,8 @@ package rkv
 
 import (
 	"os"
-	"pkg/raft"
-	"pkg/util"
+	"raft-kv_store/pkg/raft"
+	"raft-kv_store/pkg/util"
 )
 
 func StartRKV(nodeID int, port string, peers map[int]raft.NodeInfo) {

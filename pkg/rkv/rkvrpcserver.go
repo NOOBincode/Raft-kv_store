@@ -4,9 +4,9 @@ import (
 	"context"
 	"google.golang.org/grpc"
 	"net"
-	"pkg/raft"
-	"pkg/rkv/pb"
-	"pkg/util"
+	"raft-kv_store/pkg/raft"
+	"raft-kv_store/pkg/rkv/pb"
+	"raft-kv_store/pkg/util"
 	"sync"
 	"time"
 )

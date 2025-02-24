@@ -2,7 +2,7 @@ package raft
 
 import (
 	"math/rand"
-	"pkg/util"
+	"raft-kv_store/pkg/util"
 	"sync"
 	"time"
 )

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"github.com/bytedance/sonic"
 	"io"
-	"pkg/raft"
-	"pkg/util"
+	"raft-kv_store/pkg/raft"
+	"raft-kv_store/pkg/util"
 	"sync"
 )
 

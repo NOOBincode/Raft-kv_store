@@ -3,7 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
-	"pkg/util"
+	"raft-kv_store/pkg/util"
 	"sync"
 )
 
@@ -70,8 +70,121 @@ type node struct {
 	votedFor      int
 	votes         map[int]bool
 	logMgr        IlogManager
-	peerMgr       peerManager
+	peerMgr       IPeerManager
 	timer         IRaftTimer
+}
+
+func (n *node) Start() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	util.WriteInfo("节点 %d 启动中...", n.nodeID)
+	n.timer.start()
+	n.peerMgr.start()
+
+	n.enterFollowerState(n.nodeID, 0)
+}
+
+func (n *node) OnSnapshot(part *SnapshotRequestHeader) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	//
+	return n.tryFollowNewTerm(part.LeaderID, part.Term, true)
+}
+
+func (n *node) AppendEntries(ctx context.Context, req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
+
+	//如果req.Term比当前任期大,以上调用让当先领导者已经被更新
+	util.WriteTrace("T%d:在领导者%d,prevIndex:%d,prevTerm:%d,entryCnt:%d,处获取到了appendEntries的任务", n.currentTerm, req.LeaderID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
+	lastMatchIndex, prevMatch := req.PrevLogIndex, false
+	if req.Term >= n.currentTerm {
+		prevMatch = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		if prevMatch {
+			lastMatchIndex = n.logMgr.LastIndex()
+			n.commitTo(min(req.LeaderCommit, n.logMgr.LastIndex()))
+		}
+	}
+	return &AppendEntriesReply{
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   prevMatch,
+		LastMatch: lastMatchIndex,
+	}, nil
+}
+
+func (n *node) RequestVote(ctx context.Context, req *RequestVoteRequest) (*RequestVoteReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	//if req.Term > currentTerm,转换为follower状态(重置voteFor)
+	//if req.Term < currentTerm,拒绝投票
+	//if req.Term >= currentTerm 如果voteFor是null或者candidateId,并且是最新的,就给予vote
+	//只有收到了同样的KV请求,reqTerm才会和currentTerm相等
+	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
+	voteGranted := false
+	if req.Term > n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
+		n.votedFor = req.CandidateID
+		voteGranted = true
+		util.WriteInfo("T%d: Node%d投票给了Node%d\n", n.currentTerm, n.nodeID, req.CandidateID)
+	}
+	return &RequestVoteReply{
+		VoteGranted: voteGranted,
+		Term:        n.currentTerm,
+		NodeID:      n.nodeID,
+		VotedTerm:   req.Term,
+	}, nil
+}
+
+func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*AppendEntriesReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
+	//同AE
+	success := false
+	lastMatchIndex := req.SnapshotIndex
+	if req.Term >= n.currentTerm {
+		if n.logMgr.SnapshotIndex() == req.SnapshotIndex && n.logMgr.SnapshotTerm() == req.SnapshotTerm {
+			util.WriteInfo("T%d:Node%d 正在忽略来自Node%d重复的快照")
+			success = true
+		} else {
+			//只有在任期有效时才处理日志
+			util.WriteInfo("T%d:Node%d正在从节点Node%d安装快照,T%dL%d", n.currentTerm, n.nodeID, req.SnapshotTerm, req.SnapshotIndex, req.LeaderID)
+			if err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm); err != nil {
+				util.WriteError("T%d: 安装快照失败 %s\n", n.currentTerm, err)
+			} else {
+				success = true
+			}
+		}
+	}
+
+	return &AppendEntriesReply{
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   success,
+		LastMatch: lastMatchIndex,
+	}, nil
+}
+
+func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	n.mu.RLock()
+	state := n.NodeState
+	leader := n.currentLeader
+	n.mu.RUnlock()
+	switch {
+	case leader == -1:
+		return nil, errorNoLeaderAvailable
+	case state != NodeStateLeader:
+		return n.peerMgr.getPeer(leader).Execute(ctx, cmd)
+	default:
+		return n.leaderExecute(ctx, cmd)
+	}
 }
 
 func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) (INode, error) {
@@ -92,7 +205,9 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		logMgr:        newLogMgr(nodeID, sm),
 	}
 	n.timer = newRaftTimer(n.onTimer)
-	n.peerMgr = newPeerManager(peers,,proxyFactory)
+	n.peerMgr = newPeerManager(peers, n.replicateData, proxyFactory)
+	return n, nil
+
 }
 
 func validateCluster(nodeID int, peers map[int]NodeInfo) error {
@@ -144,7 +259,7 @@ func (n *node) onTimer(state NodeState, term int) {
 	if state == n.NodeState && term == n.currentTerm {
 		if n.NodeState == NodeStateLeader {
 			fn = n.sendHeartbeat
-		}else{
+		} else {
 			fn = n.startElection
 		}
 	}
@@ -161,7 +276,7 @@ func (n *node) enterCandidateState() {
 
 	//先为自己投票
 	n.votedFor = n.nodeID
-	n.votes = make(map[int]bool,n.clusterSize)
+	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
 
 	//重置计时器
@@ -180,10 +295,10 @@ func (n *node) setTerm(newTerm int) {
 }
 
 func (n *node) refreshTimer() {
-	n.timer.reset(n.NodeState,n.currentTerm)
+	n.timer.reset(n.NodeState, n.currentTerm)
 }
 
-func (n *node) startElection(){
+func (n *node) startElection() {
 	runCampaign := n.prepareCampaign()
 	votes := runCampaign()
 	n.countVotes(votes)
@@ -204,17 +319,17 @@ func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 	currentTerm := n.currentTerm
 
 	return func() <-chan *RequestVoteReply {
-		ctx,cancel := context.WithTimeout(context.Background(),rpcTimeOut)
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
 
 		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
 		defer close(rvReplies)
 
 		n.peerMgr.waitAll(func(peer *Peer, wg *sync.WaitGroup) {
-			go func(){
-				reply,err := peer.RequestVote(ctx,req)
+			go func() {
+				reply, err := peer.RequestVote(ctx, req)
 				if err != nil {
-					util.WriteInfo("T%d:投票请求来自Node %d,已授权:%v\n",currentTerm,reply.NodeID,reply.VoteGranted)
+					util.WriteInfo("T%d:投票请求来自Node %d,已授权:%v\n", currentTerm, reply.NodeID, reply.VoteGranted)
 					rvReplies <- reply
 				}
 				wg.Done()
@@ -229,28 +344,31 @@ func (n *node) countVotes(replies <-chan *RequestVoteReply) {
 	defer n.mu.Unlock()
 
 	for reply := range replies {
-		if n.tryFollowNewTerm(reply.NodeID,reply.Term,false) {
+		if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
 			return
 		}
 		if n.NodeState != NodeStateCandidate || reply.VotedTerm != n.currentTerm {
-			util.WriteTrace("T%d: 接受了无同伴的节点或者未授权的投票,来自Node%d,term :%d,voteGranted:%t\n",n.currentTerm,reply.NodeID,reply.VotedTerm,reply.VoteGranted)
+			util.WriteTrace("T%d: 接受了无同伴的节点或者未授权的投票,来自Node%d,term :%d,voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
 			continue
 		}
 
 		n.votes[reply.NodeID] = true
 	}
 
-	if n.wonElection(){
+	if n.wonElection() {
 		n.enterLeaderState()
 	}
 }
 
-func (n *node) wonElection() bool{
-	total := 0
-	for _, vote := range n.votes {
-		if vote {
-			total++
-		}
-	}
+func (n *node) wonElection() bool {
+	var total int
+	total = len(n.votes)
 	return total > n.clusterSize/2
+}
+func (n *node) commitTo(targetCommitIndex int) {
+	if newCommit, newSnapshot := n.logMgr.CommitAndApply(targetCommitIndex); newCommit {
+		util.WriteTrace("T%d:Node%d已经上传至L%d\n", n.currentTerm, n.nodeID, newSnapshot)
+	} else if newSnapshot {
+		util.WriteInfo("T%d: Node%d 创建了新快照 T%dL%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotTerm(), n.logMgr.SnapshotIndex())
+	}
 }
