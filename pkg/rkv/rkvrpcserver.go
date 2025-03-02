@@ -18,9 +18,9 @@ type rkvRPCServer struct {
 	pb.UnimplementedKVStoreRaftServer
 }
 
-func newRKVRPCServer(node raft.INode) *rkvRPCServer {
+func newRKVRPCServer(node raft.INode, wg *sync.WaitGroup) *rkvRPCServer {
 	return &rkvRPCServer{
-		wg:   new(sync.WaitGroup),
+		wg:   wg,
 		node: node,
 	}
 }
@@ -125,7 +125,7 @@ func (s *rkvRPCServer) Start(port string) {
 }
 
 // Stop 关停 rpc server
-func (s *rkvRPCServer) Stop(port string) {
+func (s *rkvRPCServer) Stop() {
 	s.server.GracefulStop()
 	s.wg.Wait()
 }

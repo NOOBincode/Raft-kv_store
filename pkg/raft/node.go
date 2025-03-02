@@ -216,7 +216,7 @@ func validateCluster(nodeID int, peers map[int]NodeInfo) error {
 	}
 
 	for i, p := range peers {
-		if p.NodeID != nodeID {
+		if p.NodeID == nodeID {
 			return errorCurrentNodeInPeers
 		} else if p.NodeID != i {
 			return errorInvalidPeerNodeID
@@ -281,6 +281,8 @@ func (n *node) enterCandidateState() {
 
 	//重置计时器
 	n.refreshTimer()
+
+	util.WriteInfo("T%d: \u270b Node%d 开始了选举\n", n.currentTerm, n.nodeID)
 }
 
 func (n *node) setTerm(newTerm int) {

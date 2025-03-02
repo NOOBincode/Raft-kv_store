@@ -47,6 +47,7 @@ func (rt *raftTimer) stop() {
 func (rt *raftTimer) start() {
 	rt.timer = time.NewTimer(time.Hour * 24)
 	rt.wg.Add(1)
+	util.WriteInfo("启动Timer中..")
 	go rt.run()
 }
 
@@ -62,6 +63,7 @@ func (rt *raftTimer) run() {
 		case evt := <-rt.evtChan:
 			state, term = evt.state, evt.term
 			timeout := getTimeout(state, term)
+			util.WriteInfo("%d", timeout)
 			util.WriteVerbose("重置计时器,state:%d,term:%d,timeout:%d", state, term, timeout)
 			util.RestTimer(rt.timer, timeout)
 		case _, ok := <-rt.timer.C:

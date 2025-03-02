@@ -3,6 +3,7 @@ package raft
 import (
 	"math"
 	"raft-kv_store/pkg/util"
+	"runtime/debug"
 	"sync"
 )
 
@@ -31,18 +32,35 @@ func newBatchReplicator(replicateFn func() int) *batchReplicator {
 func (br *batchReplicator) start() {
 	br.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				util.WriteError("BatchReplicator: Panic in goroutine (error=%v, stack=%s)", r, debug.Stack())
+			}
+			br.wg.Done()
+			util.WriteInfo("BatchReplicator: Goroutine exited")
+		}()
+
+		util.WriteTrace("BatchReplicator: Entering request loop")
+
 		lastMatch := -1
 		for req := range br.requests {
+			util.WriteVerbose("BatchReplicator: New request (targetID=%d, lastMatch=%d)", req.targetID, lastMatch)
+
 			if req.targetID > lastMatch {
-				//启动新的批量处理操作，检查能否和targetID对接
-				lastMatch = br.replicateFn()
+				util.WriteInfo("BatchReplicator: Calling replicateFn (targetID=%d)", req.targetID)
+				newMatch := br.replicateFn()
+				lastMatch = newMatch
+				util.WriteVerbose("BatchReplicator: Updated lastMatch=%d", lastMatch)
 			}
 
 			if req.reqwq != nil {
+				util.WriteTrace("BatchReplicator: Completing request (targetID=%d)", req.targetID)
 				req.reqwq.Done()
+			} else {
+				util.WriteVerbose("BatchReplicator: Request has nil wait queue (targetID=%d)", req.targetID)
 			}
 		}
-		br.wg.Done()
+		util.WriteInfo("BatchReplicator: Requests channel closed")
 	}()
 }
 
